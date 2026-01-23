@@ -1,0 +1,661 @@
+import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
+import { api } from './dashboardSlice';  // Import your API instance
+
+// Conditional logic types
+export interface ConditionalRule {
+  field: string;  // Property key to check
+  operator: 'equals' | 'not_equals' | 'contains' | 'greater_than' | 'less_than' | 'in' | 'not_in' | 'minimum' | 'maximum' | 'pattern';
+  value: any;
+}
+
+export interface ConditionalLogic {
+  // Logical operators
+  allOf?: ConditionalRule[];  // AND - all must be true
+  anyOf?: ConditionalRule[];  // OR - at least one must be true
+  oneOf?: ConditionalRule[];  // XOR - exactly one must be true
+  not?: ConditionalRule;      // NOT - must be false
+}
+
+export interface FormsDataTable {
+  query: string;
+  total: number;
+  results: JSONSchema[];
+}
+
+// Extended JSON Schema field with custom metadata
+export interface JSONSchemaField {
+  // Standard JSON Schema properties
+  type: 'string' | 'number' | 'boolean' | 'object' | 'array';
+  title: string;
+  description?: string;
+
+  // String/Number constraints
+  enum?: string[];
+  minimum?: number;
+  maximum?: number;
+  exclusiveMinimum?: number;
+  exclusiveMaximum?: number;
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;  // Regex pattern
+
+  // Array properties
+  items?: JSONSchemaField;
+  minItems?: number;
+  maxItems?: number;
+  uniqueItems?: boolean;
+  contains?: JSONSchemaField;
+
+  // Object properties (for nested questions)
+  properties?: {
+    [key: string]: JSONSchemaField;
+  };
+  required?: string[];
+
+  // Conditionals (if/then/else)
+  if?: {
+    properties?: {
+      [key: string]: Partial<JSONSchemaField>;
+    };
+  };
+  then?: {
+    properties?: {
+      [key: string]: JSONSchemaField;
+    };
+    required?: string[];
+  };
+  else?: {
+    properties?: {
+      [key: string]: JSONSchemaField;
+    };
+    required?: string[];
+  };
+
+  // Multiple conditionals
+  allOf?: Array<{ if?: any; then?: any; else?: any }>;
+  anyOf?: Array<{ if?: any; then?: any; else?: any }>;
+  oneOf?: Array<{ if?: any; then?: any; else?: any }>;
+  not?: any;
+
+  // Custom extensions (x- prefix is JSON Schema convention for extensions)
+  'x-id'?: string;              // Unique identifier for the field
+  'x-parent-id'?: string;       // Parent question ID (for subquestions)
+  'x-position'?: number;        // Display order
+  'x-component'?: string;       // UI component type (text, select, radio, etc.)
+  'x-conditionals'?: ConditionalLogic;  // Custom conditional logic
+  'x-metadata'?: {              // Additional metadata
+    [key: string]: any;
+  };
+}
+
+export interface JSONSchema {
+  $id?: string;  // Schema URI identifier
+  title: string;
+  type: 'object';
+  description?: string;
+  properties: {
+    [key: string]: JSONSchemaField;
+  };
+  required?: string[];
+
+  // Schema-level conditionals
+  if?: {
+    properties?: {
+      [key: string]: Partial<JSONSchemaField>;
+    };
+  };
+  then?: {
+    properties?: {
+      [key: string]: JSONSchemaField;
+    };
+  };
+  else?: {
+    properties?: {
+      [key: string]: JSONSchemaField;
+    };
+  };
+
+  allOf?: any[];
+  anyOf?: any[];
+  oneOf?: any[];
+};
+
+export interface FormEditorState {
+  forms: FormsDataTable;
+  selectedForm: string | null;
+  selectedNode: string | null;
+
+  // Loading states
+  loading: boolean;
+  error: string | null;
+
+  // Individual operation states
+  fetchingForms: boolean;
+  creatingForm: boolean;
+  updatingForm: boolean;
+}
+
+const initialState: FormEditorState = {
+  forms: {
+    query: '',
+    total: 0,
+    results: []
+  },
+  selectedForm: null,
+  selectedNode: null,
+  loading: false,
+  error: null,
+  fetchingForms: false,
+  creatingForm: false,
+  updatingForm: false,
+};
+
+export const fetchForms = createAsyncThunk(
+  'formEditor/fetchForms',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await api.get('/api/forms');
+      return { forms: response.data as FormsDataTable, query: '', total: response.data.length } ;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch forms');
+    }
+  }
+);
+
+export const createForm = createAsyncThunk(
+  'formEditor/createForm',
+  async (form: Omit<JSONSchema, '$id'>, { rejectWithValue }) => {
+    try {
+      const response = await api.post('/api/forms', form);
+      return response.data as JSONSchema;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to create form');
+    }
+  }
+);
+
+export const updateForm = createAsyncThunk(
+  'formEditor/updateForm',
+  async ({ id, data }: { id: string; data: Partial<JSONSchema> }, { rejectWithValue }) => {
+    try {
+      const response = await api.put(`/api/forms/${id}`, data);
+      return response.data as JSONSchema;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to update form');
+    }
+  }
+);
+
+export const deleteForm = createAsyncThunk(
+  'formEditor/deleteForm',
+  async (id: string, { rejectWithValue }) => {
+    try {
+      await api.delete(`/api/forms/${id}`);
+      return id;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to delete form');
+    }
+  }
+);
+
+export const fetchFormById = createAsyncThunk(
+  'formEditor/fetchFormById',
+  async (id: string, { rejectWithValue }) => {
+    try {
+      const response = await api.get(`/api/forms/${id}`);
+      return response.data as JSONSchema;
+    } catch (error: any) {
+      return rejectWithValue(error.response?.data?.message || 'Failed to fetch form');
+    }
+  }
+);
+
+const formEditorSlice = createSlice({
+  name: 'formEditor',
+  initialState,
+  reducers: {
+    setSelectedForm: (state, action: PayloadAction<string | null>) => {
+      state.selectedForm = action.payload;
+    },
+    setSelectedNode: (state, action: PayloadAction<string | null>) => {
+      state.selectedNode = action.payload;
+    },
+    clearError: (state) => {
+      state.error = null;
+    },
+    addFormLocally: (state, action: PayloadAction<JSONSchema>) => {
+      state.forms.push(action.payload);
+    },
+    updateFormLocally: (state, action: PayloadAction<{ id: string; data: Partial<JSONSchema> }>) => {
+      const index = state.forms.findIndex(f => f.$id === action.payload.id);
+      if (index !== -1) {
+        state.forms[index] = { ...state.forms[index], ...action.payload.data };
+      }
+    },
+    removeFormLocally: (state, action: PayloadAction<string>) => {
+      state.forms = state.forms.filter(f => f.$id !== action.payload);
+    },
+  },
+  extraReducers: (builder) => {
+    builder.addCase(fetchForms.pending, (state) => {
+      state.fetchingForms = true;
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(fetchForms.fulfilled, (state, action) => {
+      state.fetchingForms = false;
+      state.loading = false;
+      state.forms = action.payload;
+    });
+    builder.addCase(fetchForms.rejected, (state, action) => {
+      state.fetchingForms = false;
+      state.loading = false;
+      state.error = action.payload as string || 'Failed to fetch forms';
+    });
+
+    builder.addCase(createForm.pending, (state) => {
+      state.creatingForm = true;
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(createForm.fulfilled, (state, action) => {
+      state.creatingForm = false;
+      state.loading = false;
+      state.forms.push(action.payload);
+      state.selectedForm = action.payload.$id || null;
+    });
+    builder.addCase(createForm.rejected, (state, action) => {
+      state.creatingForm = false;
+      state.loading = false;
+      state.error = action.payload as string || 'Failed to create form';
+    });
+
+    builder.addCase(updateForm.pending, (state) => {
+      state.updatingForm = true;
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(updateForm.fulfilled, (state, action) => {
+      state.updatingForm = false;
+      state.loading = false;
+      const index = state.forms.findIndex(f => f.$id === action.payload.$id);
+      if (index !== -1) {
+        state.forms[index] = action.payload;
+      }
+    });
+    builder.addCase(updateForm.rejected, (state, action) => {
+      state.updatingForm = false;
+      state.loading = false;
+      state.error = action.payload as string || 'Failed to update form';
+    });
+
+    builder.addCase(deleteForm.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(deleteForm.fulfilled, (state, action) => {
+      state.loading = false;
+      state.forms = state.forms.filter(f => f.$id !== action.payload);
+      if (state.selectedForm === action.payload) {
+        state.selectedForm = null;
+      }
+    });
+    builder.addCase(deleteForm.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string || 'Failed to delete form';
+    });
+
+    builder.addCase(fetchFormById.pending, (state) => {
+      state.loading = true;
+      state.error = null;
+    });
+    builder.addCase(fetchFormById.fulfilled, (state, action) => {
+      state.loading = false;
+      const index = state.forms.findIndex(f => f.$id === action.payload.$id);
+      if (index !== -1) {
+        state.forms[index] = action.payload;
+      } else {
+        state.forms.push(action.payload);
+      }
+      state.selectedForm = action.payload.$id || null;
+    });
+    builder.addCase(fetchFormById.rejected, (state, action) => {
+      state.loading = false;
+      state.error = action.payload as string || 'Failed to fetch form';
+    });
+  }
+});
+
+export const {
+  setSelectedForm,
+  setSelectedNode,
+  clearError,
+  addFormLocally,
+  updateFormLocally,
+  removeFormLocally,
+} = formEditorSlice.actions;
+
+export default formEditorSlice.reducer;
+
+/**
+ * USAGE EXAMPLES - ASYNC ACTIONS
+ * ================================
+ *
+ * Example 1: Fetch all forms
+ * ---------------------------
+ * import { useDispatch, useSelector } from 'react-redux';
+ * import { fetchForms } from './store/slices/formEditorSlice';
+ *
+ * function MyComponent() {
+ *   const dispatch = useDispatch();
+ *   const { forms, loading, error } = useSelector(state => state.formEditor);
+ *
+ *   useEffect(() => {
+ *     dispatch(fetchForms());
+ *   }, [dispatch]);
+ *
+ *   if (loading) return <div>Loading...</div>;
+ *   if (error) return <div>Error: {error}</div>;
+ *
+ *   return (
+ *     <div>
+ *       {forms.map(form => (
+ *         <div key={form.$id}>{form.title}</div>
+ *       ))}
+ *     </div>
+ *   );
+ * }
+ *
+ * Example 2: Create a new form
+ * -----------------------------
+ * const handleCreateForm = async () => {
+ *   const newForm: JSONSchema = {
+ *     title: "Customer Survey",
+ *     type: "object",
+ *     properties: {
+ *       name: {
+ *         type: "string",
+ *         title: "What is your name?",
+ *         'x-id': 'q1',
+ *         'x-position': 1
+ *       },
+ *       email: {
+ *         type: "string",
+ *         title: "What is your email?",
+ *         'x-id': 'q2',
+ *         'x-position': 2,
+ *         pattern: "^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$"
+ *       }
+ *     },
+ *     required: ["name", "email"]
+ *   };
+ *
+ *   try {
+ *     const result = await dispatch(createForm(newForm)).unwrap();
+ *     console.log('Form created:', result);
+ *     // Navigate to the new form or show success message
+ *   } catch (error) {
+ *     console.error('Failed to create form:', error);
+ *   }
+ * };
+ *
+ * Example 3: Update a form
+ * -------------------------
+ * const handleUpdateForm = async (formId: string) => {
+ *   const updates = {
+ *     title: "Updated Survey Title",
+ *     properties: {
+ *       ...existingForm.properties,
+ *       phone: {
+ *         type: "string",
+ *         title: "Phone number",
+ *         'x-id': 'q3',
+ *         'x-position': 3
+ *       }
+ *     }
+ *   };
+ *
+ *   try {
+ *     await dispatch(updateForm({ id: formId, data: updates })).unwrap();
+ *     console.log('Form updated successfully');
+ *   } catch (error) {
+ *     console.error('Failed to update form:', error);
+ *   }
+ * };
+ *
+ * Example 4: Delete a form
+ * -------------------------
+ * const handleDeleteForm = async (formId: string) => {
+ *   if (window.confirm('Are you sure you want to delete this form?')) {
+ *     try {
+ *       await dispatch(deleteForm(formId)).unwrap();
+ *       console.log('Form deleted successfully');
+ *     } catch (error) {
+ *       console.error('Failed to delete form:', error);
+ *     }
+ *   }
+ * };
+ *
+ * Example 5: Using loading states
+ * --------------------------------
+ * function FormEditor() {
+ *   const dispatch = useDispatch();
+ *   const {
+ *     forms,
+ *     loading,
+ *     fetchingForms,
+ *     creatingForm,
+ *     updatingForm,
+ *     error
+ *   } = useSelector(state => state.formEditor);
+ *
+ *   return (
+ *     <div>
+ *       {fetchingForms && <Spinner message="Loading forms..." />}
+ *       {creatingForm && <Spinner message="Creating form..." />}
+ *       {updatingForm && <Spinner message="Saving changes..." />}
+ *       {error && <Alert severity="error">{error}</Alert>}
+ *
+ *       <Button
+ *         onClick={() => dispatch(fetchForms())}
+ *         disabled={loading}
+ *       >
+ *         Refresh Forms
+ *       </Button>
+ *     </div>
+ *   );
+ * }
+ *
+ * Example 6: Fetch single form by ID
+ * -----------------------------------
+ * const handleLoadForm = async (formId: string) => {
+ *   try {
+ *     const form = await dispatch(fetchFormById(formId)).unwrap();
+ *     console.log('Form loaded:', form);
+ *     // The form is automatically added to state.forms and selected
+ *   } catch (error) {
+ *     console.error('Failed to load form:', error);
+ *   }
+ * };
+ *
+ * Example 7: Using with React Query (alternative approach)
+ * ---------------------------------------------------------
+ * import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+ *
+ * function FormsList() {
+ *   const queryClient = useQueryClient();
+ *
+ *   // Fetch forms
+ *   const { data: forms, isLoading } = useQuery({
+ *     queryKey: ['forms'],
+ *     queryFn: async () => {
+ *       const response = await api.get('/api/forms');
+ *       return response.data;
+ *     }
+ *   });
+ *
+ *   // Create form mutation
+ *   const createMutation = useMutation({
+ *     mutationFn: async (newForm: JSONSchema) => {
+ *       const response = await api.post('/api/forms', newForm);
+ *       return response.data;
+ *     },
+ *     onSuccess: () => {
+ *       queryClient.invalidateQueries({ queryKey: ['forms'] });
+ *     }
+ *   });
+ *
+ *   return (
+ *     <div>
+ *       {isLoading && <Spinner />}
+ *       <button onClick={() => createMutation.mutate(newFormData)}>
+ *         Create Form
+ *       </button>
+ *     </div>
+ *   );
+ * }
+ *
+ * ================================
+ * USAGE EXAMPLES - SYNC ACTIONS
+ * ================================
+ *
+ * Example 1: Add a simple question with ID
+ * -----------------------------------------
+ * dispatch(addField({
+ *   sectionIndex: 0,
+ *   fieldKey: 'age',
+ *   field: {
+ *     type: 'number',
+ *     title: 'What is your age?',
+ *     'x-id': 'q3',
+ *     'x-position': 3,
+ *     minimum: 0,
+ *     maximum: 120
+ *   }
+ * }));
+ *
+ * Example 2: Add a question with subquestions using conditionals
+ * ---------------------------------------------------------------
+ * // First, add the main question
+ * dispatch(addField({
+ *   sectionIndex: 0,
+ *   fieldKey: 'hasPurchased',
+ *   field: {
+ *     type: 'boolean',
+ *     title: 'Have you purchased our product?',
+ *     'x-id': 'q4',
+ *     'x-position': 4
+ *   }
+ * }));
+ *
+ * // Then add conditional to show subquestions
+ * dispatch(setFieldConditional({
+ *   sectionIndex: 0,
+ *   fieldKey: 'hasPurchased',
+ *   conditional: {
+ *     if: {
+ *       properties: {
+ *         hasPurchased: { const: true }
+ *       }
+ *     },
+ *     then: {
+ *       properties: {
+ *         purchaseDate: {
+ *           type: 'string',
+ *           title: 'When did you purchase?',
+ *           'x-id': 'q4_sub1',
+ *           'x-parent-id': 'q4'
+ *         },
+ *         rating: {
+ *           type: 'number',
+ *           title: 'Rate the product (1-5)',
+ *           'x-id': 'q4_sub2',
+ *           'x-parent-id': 'q4',
+ *           minimum: 1,
+ *           maximum: 5
+ *         }
+ *       }
+ *     }
+ *   }
+ * }));
+ *
+ * Example 3: Add custom conditional logic
+ * ----------------------------------------
+ * dispatch(setCustomConditional({
+ *   sectionIndex: 0,
+ *   fieldKey: 'specialOffer',
+ *   conditionals: {
+ *     allOf: [
+ *       { field: 'age', operator: 'greater_than', value: 18 },
+ *       { field: 'country', operator: 'equals', value: 'USA' }
+ *     ]
+ *   }
+ * }));
+ *
+ * Example 4: Add metadata to a field
+ * -----------------------------------
+ * dispatch(setFieldMetadata({
+ *   sectionIndex: 0,
+ *   fieldKey: 'email',
+ *   metadata: {
+ *     id: 'q2',
+ *     position: 2,
+ *     component: 'email-input',
+ *     validation: {
+ *       custom: 'email-validator'
+ *     }
+ *   }
+ * }));
+ *
+ * Example 5: Complete form with conditionals
+ * -------------------------------------------
+ * const completeSchema: JSONSchema = {
+ *   title: "Customer Survey",
+ *   type: "object",
+ *   properties: {
+ *     serviceType: {
+ *       type: "string",
+ *       title: "Which service are you interested in?",
+ *       enum: ["Consulting", "Training", "Support"],
+ *       'x-id': 'q1',
+ *       'x-position': 1
+ *     }
+ *   },
+ *   allOf: [
+ *     {
+ *       if: {
+ *         properties: { serviceType: { const: "Consulting" } }
+ *       },
+ *       then: {
+ *         properties: {
+ *           projectScope: {
+ *             type: "string",
+ *             title: "Project scope?",
+ *             enum: ["Small", "Medium", "Large"],
+ *             'x-id': 'q1_consulting',
+ *             'x-parent-id': 'q1'
+ *           }
+ *         }
+ *       }
+ *     },
+ *     {
+ *       if: {
+ *         properties: { serviceType: { const: "Training" } }
+ *       },
+ *       then: {
+ *         properties: {
+ *           participants: {
+ *             type: "number",
+ *             title: "Number of participants",
+ *             'x-id': 'q1_training',
+ *             'x-parent-id': 'q1',
+ *             minimum: 1
+ *           }
+ *         }
+ *       }
+ *     }
+ *   ]
+ * };
+ *
+ * dispatch(addSection(completeSchema));
+ */
